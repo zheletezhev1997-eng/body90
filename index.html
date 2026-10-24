@@ -2,6 +2,7 @@
 <html lang="ru">
 <head>
 <meta charset="UTF-8">
+<script src="https://telegram.org/js/telegram-web-app.js?64"></script>
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
 <title>BEСМ. · BODY90 — экосистема изменений</title>
 <style>
@@ -909,10 +910,11 @@ button,input,select,textarea{font-family:inherit!important}
     <div class="cloud-actions"><button type="button" class="cloud-action-btn" onclick="cloudSaveProject()">Сохранить проект</button></div>
     <div class="cloud-field"><label for="cloud-email">Email аккаунта</label><input id="cloud-email" type="email" autocomplete="email" placeholder="you@example.com"></div>
     <div class="cloud-field"><label for="cloud-password">Пароль аккаунта</label><input id="cloud-password" type="password" autocomplete="current-password" minlength="8" placeholder="Не менее 8 символов"></div>
-    <label class="cloud-privacy"><input id="cloud-data-consent" type="checkbox"><span>Я разрешаю BODY90 передавать выбранному выше проекту мой email для входа, а также профиль, вес и замеры, отметки тренировок, упражнения, питание, заметки и фото питания для синхронизации между устройствами.</span></label>
+    <label class="cloud-privacy"><input id="cloud-data-consent" type="checkbox"><span>Я разрешаю BODY90 передавать выбранному выше проекту мой email для входа, а также профиль, вес и замеры, отметки тренировок, упражнения, питание, заметки и фото питания для синхронизации между устройствами. При входе через Telegram также передаются мой Telegram ID и имя для создания или привязки аккаунта.</span></label>
     <div class="cloud-actions">
       <button type="button" class="cloud-action-btn primary" id="cloud-signin" onclick="cloudSignIn()">Войти и синхронизировать</button>
       <button type="button" class="cloud-action-btn" id="cloud-signup" onclick="cloudSignUp()">Создать аккаунт</button>
+      <button type="button" class="cloud-action-btn" id="cloud-telegram-login" onclick="cloudTelegramLogin()" hidden>Войти через Telegram</button>
       <button type="button" class="cloud-action-btn" id="cloud-sync" onclick="cloudSyncNow()" hidden>Синхронизировать сейчас</button>
       <button type="button" class="cloud-action-btn danger" id="cloud-logout" onclick="cloudSignOut()" hidden>Выйти</button>
     </div>
@@ -2664,7 +2666,8 @@ function openVid(progId,phIdx,wIdx){
   });
 })();
 </script>
-<script>(function () {
+<script>
+(function () {
   'use strict';
 
   // Expose legacy top-level lexical state to this separate script without changing the app's model.
@@ -3011,6 +3014,33 @@ function openVid(progId,phIdx,wIdx){
     if (result && result.access_token) setSession(result);
     return result;
   }
+  function telegramWebApp() {
+    return window.Telegram && window.Telegram.WebApp ? window.Telegram.WebApp : null;
+  }
+  async function signInWithTelegram() {
+    var app = telegramWebApp();
+    if (!app || !app.initData) throw new Error('Открой BODY90 через Telegram Mini App и попробуй ещё раз.');
+    configure(document.getElementById('cloud-project-url').value, document.getElementById('cloud-publishable-key').value);
+    var consent = document.getElementById('cloud-data-consent');
+    await setConsent(consent && consent.checked);
+    var existingToken = null;
+    if (session && session.access_token) {
+      try { await freshSession(); existingToken = session && session.access_token; }
+      catch (e) { if (session) throw new Error('Не удалось обновить текущий аккаунт. Войди по email, затем привяжи Telegram.'); existingToken = null; }
+    }
+    setStatus(existingToken ? 'Привязываю Telegram к текущему аккаунту…' : 'Проверяю вход через Telegram…');
+    var result = await api('/functions/v1/body90-telegram-auth', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ initData: app.initData })
+    }, existingToken);
+    if (result && result.access_token) setSession(result);
+    if (!session || !session.access_token) throw new Error('Supabase не вернул сессию. Проверь Edge Function и секрет токена бота.');
+    var user = await currentUser();
+    setStatus(result && result.linked ? 'Telegram привязан к аккаунту · ' + (user.email || user.id) : 'Вход через Telegram выполнен');
+    await syncAfterLogin();
+    updatePanel();
+  }
   async function signOut() {
     if (session && session.access_token && isConfigured()) {
       try { await api('/auth/v1/logout', { method: 'POST' }, session.access_token); }
@@ -3332,14 +3362,20 @@ function openVid(progId,phIdx,wIdx){
     var signUp = document.getElementById('cloud-signup');
     var sync = document.getElementById('cloud-sync');
     var logout = document.getElementById('cloud-logout');
+    var telegramLogin = document.getElementById('cloud-telegram-login');
     if (urlInput && config && !urlInput.value) urlInput.value = config.url || '';
     if (keyInput && config && !keyInput.value) keyInput.value = config.key || '';
     if (status) status.textContent = session ? (statusMessage || 'Вход выполнен') : (isConfigured() ? 'Проект настроен · вход не выполнен' : statusMessage);
-    if (account) account.textContent = session && session.user ? ('Аккаунт: ' + (session.user.email || session.user.id)) : '';
+    if (account) { var meta = session && session.user && session.user.user_metadata || {}; account.textContent = session && session.user ? ('Аккаунт: ' + (meta.display_name || session.user.email || session.user.id)) : ''; }
     if (signIn) signIn.hidden = !!(session && session.access_token);
     if (signUp) signUp.hidden = !!(session && session.access_token);
     if (sync) sync.hidden = !(session && session.access_token);
     if (logout) logout.hidden = !(session && session.access_token);
+    if (telegramLogin) {
+      var telegram = telegramWebApp();
+      telegramLogin.hidden = !(telegram && telegram.initData);
+      telegramLogin.textContent = session && session.access_token ? 'Привязать Telegram к аккаунту' : 'Войти через Telegram';
+    }
   }
   function openModal() {
     var modal = document.getElementById('cloud-modal');
@@ -3371,6 +3407,11 @@ function openVid(progId,phIdx,wIdx){
     renderProfileSettings();
     document.addEventListener('keydown', function (event) { if (event.key === 'Escape') { closeModal(); closeGearEditor(); } });
     updatePanel();
+    var telegram = telegramWebApp();
+    if (telegram) {
+      try { telegram.ready(); telegram.expand(); } catch (e) {}
+      if (telegram.initData && !session) openModal();
+    }
     if (session && isConfigured() && consented()) {
       syncAfterLogin().then(updatePanel).catch(function (e) { setStatus('Ошибка облака: ' + e.message, true); updatePanel(); });
     }
@@ -3408,6 +3449,7 @@ function openVid(progId,phIdx,wIdx){
   };
   window.cloudSignIn = function () { run(function () { return connectAndSync('signin'); }); };
   window.cloudSignUp = function () { run(function () { return connectAndSync('signup'); }); };
+  window.cloudTelegramLogin = function () { run(signInWithTelegram); };
   window.cloudSyncNow = function () { run(syncAfterLogin); };
   window.cloudSignOut = function () { run(signOut); };
   window.cloudExport = function () { run(exportBackup); };
@@ -3418,6 +3460,7 @@ function openVid(progId,phIdx,wIdx){
   };
   window.addEventListener('DOMContentLoaded', init);
 })();
+
 
 
 </script>
